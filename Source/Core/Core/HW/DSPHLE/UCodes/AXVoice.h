@@ -22,6 +22,7 @@
 #include "Core/HW/DSPHLE/UCodes/AX.h"
 #include "Core/HW/DSPHLE/UCodes/AXStructs.h"
 #include "Core/HW/Memmap.h"
+#include "Core/System.h"
 
 namespace DSP::HLE
 {
@@ -44,16 +45,16 @@ inline namespace AXWii
 namespace
 {
 // Useful macro to convert xxx_hi + xxx_lo to xxx for 32 bits.
-#define HILO_TO_32(name) ((name##_hi << 16) | name##_lo)
+#define HILO_TO_32(name) ((u32(name##_hi) << 16) | name##_lo)
 
 // Used to pass a large amount of buffers to the mixing function.
 union AXBuffers
 {
   struct
   {
-    int* left;
-    int* right;
-    int* surround;
+    int* main_left;
+    int* main_right;
+    int* main_surround;
 
     int* auxA_left;
     int* auxA_right;
@@ -101,10 +102,13 @@ bool HasLpf(u32 crc)
 // Read a PB from MRAM/ARAM
 void ReadPB(u32 addr, PB_TYPE& pb, u32 crc)
 {
+  auto& system = Core::System::GetInstance();
+  auto& memory = system.GetMemory();
+
   if (HasLpf(crc))
   {
     u16* dst = (u16*)&pb;
-    Memory::CopyFromEmuSwapped<u16>(dst, addr, sizeof(pb));
+    memory.CopyFromEmuSwapped<u16>(dst, addr, sizeof(pb));
   }
   else
   {
@@ -116,19 +120,22 @@ void ReadPB(u32 addr, PB_TYPE& pb, u32 crc)
     constexpr size_t lpf_off = offsetof(AXPB, lpf);
     constexpr size_t lc_off = offsetof(AXPB, loop_counter);
 
-    Memory::CopyFromEmuSwapped<u16>((u16*)dst, addr, lpf_off);
+    memory.CopyFromEmuSwapped<u16>((u16*)dst, addr, lpf_off);
     memset(dst + lpf_off, 0, lc_off - lpf_off);
-    Memory::CopyFromEmuSwapped<u16>((u16*)(dst + lc_off), addr + lpf_off, sizeof(pb) - lc_off);
+    memory.CopyFromEmuSwapped<u16>((u16*)(dst + lc_off), addr + lpf_off, sizeof(pb) - lc_off);
   }
 }
 
 // Write a PB back to MRAM/ARAM
 void WritePB(u32 addr, const PB_TYPE& pb, u32 crc)
 {
+  auto& system = Core::System::GetInstance();
+  auto& memory = system.GetMemory();
+
   if (HasLpf(crc))
   {
     const u16* src = (const u16*)&pb;
-    Memory::CopyToEmuSwapped<u16>(addr, src, sizeof(pb));
+    memory.CopyToEmuSwapped<u16>(addr, src, sizeof(pb));
   }
   else
   {
@@ -140,8 +147,8 @@ void WritePB(u32 addr, const PB_TYPE& pb, u32 crc)
     constexpr size_t lpf_off = offsetof(AXPB, lpf);
     constexpr size_t lc_off = offsetof(AXPB, loop_counter);
 
-    Memory::CopyToEmuSwapped<u16>(addr, (const u16*)src, lpf_off);
-    Memory::CopyToEmuSwapped<u16>(addr + lpf_off, (const u16*)(src + lc_off), sizeof(pb) - lc_off);
+    memory.CopyToEmuSwapped<u16>(addr, (const u16*)src, lpf_off);
+    memory.CopyToEmuSwapped<u16>(addr + lpf_off, (const u16*)(src + lc_off), sizeof(pb) - lc_off);
   }
 }
 
@@ -180,8 +187,14 @@ protected:
     }
   }
 
-  u8 ReadMemory(u32 address) override { return ReadARAM(address); }
-  void WriteMemory(u32 address, u8 value) override { WriteARAM(value, address); }
+  u8 ReadMemory(u32 address) override
+  {
+    return Core::System::GetInstance().GetDSP().ReadARAM(address);
+  }
+  void WriteMemory(u32 address, u8 value) override
+  {
+    Core::System::GetInstance().GetDSP().WriteARAM(value, address);
+  }
 };
 
 static std::unique_ptr<Accelerator> s_accelerator = std::make_unique<HLEAccelerator>();
@@ -361,10 +374,10 @@ void GetInputSamples(PB_TYPE& pb, s16* samples, u16 count, const s16* coeffs)
 }
 
 // Add samples to an output buffer, with optional volume ramping.
-void MixAdd(int* out, const s16* input, u32 count, u16* pvol, s16* dpop, bool ramp)
+void MixAdd(int* out, const s16* input, u32 count, VolumeData* vd, s16* dpop, bool ramp)
 {
-  u16& volume = pvol[0];
-  u16 volume_delta = pvol[1];
+  u16& volume = vd->volume;
+  u16 volume_delta = vd->volume_delta;
 
   // If volume ramping is disabled, set volume_delta to 0. That way, the
   // mixing loop can avoid testing if volume ramping is enabled at each step,
@@ -411,8 +424,8 @@ void ProcessVoice(PB_TYPE& pb, const AXBuffers& buffers, u16 count, AXMixControl
   // Apply a global volume ramp using the volume envelope parameters.
   for (u32 i = 0; i < count; ++i)
   {
-    samples[i] = std::clamp(((s32)samples[i] * pb.vol_env.cur_volume) >> 15, -32767,
-                            32767);  // -32768 ?
+    const s32 sample = ((s32)samples[i] * pb.vol_env.cur_volume) >> 15;
+    samples[i] = std::clamp(sample, -32767, 32767);  // -32768 ?
     pb.vol_env.cur_volume += pb.vol_env.cur_volume_delta;
   }
 
@@ -428,43 +441,70 @@ void ProcessVoice(PB_TYPE& pb, const AXBuffers& buffers, u16 count, AXMixControl
 #define MIX_ON(C) (0 != (mctrl & MIX_##C))
 #define RAMP_ON(C) (0 != (mctrl & MIX_##C##_RAMP))
 
-  if (MIX_ON(L))
-    MixAdd(buffers.left, samples, count, &pb.mixer.left, &pb.dpop.left, RAMP_ON(L));
-  if (MIX_ON(R))
-    MixAdd(buffers.right, samples, count, &pb.mixer.right, &pb.dpop.right, RAMP_ON(R));
-  if (MIX_ON(S))
-    MixAdd(buffers.surround, samples, count, &pb.mixer.surround, &pb.dpop.surround, RAMP_ON(S));
+  if (MIX_ON(MAIN_L))
+  {
+    MixAdd(buffers.main_left, samples, count, &pb.mixer.main_left, &pb.dpop.main_left,
+           RAMP_ON(MAIN_L));
+  }
+  if (MIX_ON(MAIN_R))
+  {
+    MixAdd(buffers.main_right, samples, count, &pb.mixer.main_right, &pb.dpop.main_right,
+           RAMP_ON(MAIN_R));
+  }
+  if (MIX_ON(MAIN_S))
+  {
+    MixAdd(buffers.main_surround, samples, count, &pb.mixer.main_surround, &pb.dpop.main_surround,
+           RAMP_ON(MAIN_S));
+  }
 
   if (MIX_ON(AUXA_L))
+  {
     MixAdd(buffers.auxA_left, samples, count, &pb.mixer.auxA_left, &pb.dpop.auxA_left,
            RAMP_ON(AUXA_L));
+  }
   if (MIX_ON(AUXA_R))
+  {
     MixAdd(buffers.auxA_right, samples, count, &pb.mixer.auxA_right, &pb.dpop.auxA_right,
            RAMP_ON(AUXA_R));
+  }
   if (MIX_ON(AUXA_S))
+  {
     MixAdd(buffers.auxA_surround, samples, count, &pb.mixer.auxA_surround, &pb.dpop.auxA_surround,
            RAMP_ON(AUXA_S));
+  }
 
   if (MIX_ON(AUXB_L))
+  {
     MixAdd(buffers.auxB_left, samples, count, &pb.mixer.auxB_left, &pb.dpop.auxB_left,
            RAMP_ON(AUXB_L));
+  }
   if (MIX_ON(AUXB_R))
+  {
     MixAdd(buffers.auxB_right, samples, count, &pb.mixer.auxB_right, &pb.dpop.auxB_right,
            RAMP_ON(AUXB_R));
+  }
   if (MIX_ON(AUXB_S))
+  {
     MixAdd(buffers.auxB_surround, samples, count, &pb.mixer.auxB_surround, &pb.dpop.auxB_surround,
            RAMP_ON(AUXB_S));
+  }
 
 #ifdef AX_WII
   if (MIX_ON(AUXC_L))
+  {
     MixAdd(buffers.auxC_left, samples, count, &pb.mixer.auxC_left, &pb.dpop.auxC_left,
            RAMP_ON(AUXC_L));
+  }
   if (MIX_ON(AUXC_R))
+  {
     MixAdd(buffers.auxC_right, samples, count, &pb.mixer.auxC_right, &pb.dpop.auxC_right,
            RAMP_ON(AUXC_R));
+  }
   if (MIX_ON(AUXC_S))
+  {
     MixAdd(buffers.auxC_surround, samples, count, &pb.mixer.auxC_surround, &pb.dpop.auxC_surround,
            RAMP_ON(AUXC_S));
+  }
 #endif
 
 #undef MIX_ON

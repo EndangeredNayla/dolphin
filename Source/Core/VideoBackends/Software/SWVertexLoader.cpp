@@ -10,13 +10,15 @@
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 
-#include "VideoBackends/Software/DebugUtil.h"
+#include "Core/System.h"
+
 #include "VideoBackends/Software/NativeVertexFormat.h"
 #include "VideoBackends/Software/Rasterizer.h"
 #include "VideoBackends/Software/SWRenderer.h"
 #include "VideoBackends/Software/Tev.h"
 #include "VideoBackends/Software/TransformUnit.h"
 
+#include "VideoCommon/BoundingBox.h"
 #include "VideoCommon/CPMemory.h"
 #include "VideoCommon/DataReader.h"
 #include "VideoCommon/IndexGenerator.h"
@@ -25,6 +27,7 @@
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexLoaderBase.h"
 #include "VideoCommon/VertexLoaderManager.h"
+#include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/XFMemory.h"
 
@@ -32,10 +35,15 @@ SWVertexLoader::SWVertexLoader() = default;
 
 SWVertexLoader::~SWVertexLoader() = default;
 
+DataReader SWVertexLoader::PrepareForAdditionalData(OpcodeDecoder::Primitive primitive, u32 count,
+                                                    u32 stride, bool cullall)
+{
+  // The software renderer needs cullall to be false for zfreeze to work
+  return VertexManagerBase::PrepareForAdditionalData(primitive, count, stride, false);
+}
+
 void SWVertexLoader::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 base_vertex)
 {
-  DebugUtil::OnObjectBegin();
-
   using OpcodeDecoder::Primitive;
   Primitive primitive_type = Primitive::GX_DRAW_QUADS;
   switch (m_current_primitive_type)
@@ -55,19 +63,11 @@ void SWVertexLoader::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 base_
   }
 
   // Flush bounding box here because software overrides the base function
-  if (g_renderer->IsBBoxEnabled())
-    g_renderer->BBoxFlush();
+  if (g_bounding_box->IsEnabled())
+    g_bounding_box->Flush();
 
   m_setup_unit.Init(primitive_type);
-
-  // set all states with are stored within video sw
-  for (int i = 0; i < 4; i++)
-  {
-    Rasterizer::SetTevReg(i, Tev::RED_C, PixelShaderManager::constants.kcolors[i][0]);
-    Rasterizer::SetTevReg(i, Tev::GRN_C, PixelShaderManager::constants.kcolors[i][1]);
-    Rasterizer::SetTevReg(i, Tev::BLU_C, PixelShaderManager::constants.kcolors[i][2]);
-    Rasterizer::SetTevReg(i, Tev::ALP_C, PixelShaderManager::constants.kcolors[i][3]);
-  }
+  Rasterizer::SetTevKonstColors();
 
   for (u32 i = 0; i < m_index_generator.GetIndexLen(); i++)
   {
@@ -82,39 +82,22 @@ void SWVertexLoader::DrawCurrentBatch(u32 base_index, u32 num_indices, u32 base_
     OutputVertexData* outVertex = m_setup_unit.GetVertex();
     TransformUnit::TransformPosition(&m_vertex, outVertex);
     outVertex->normal = {};
-    if (VertexLoaderManager::g_current_components & VB_HAS_NRM0)
-    {
-      TransformUnit::TransformNormal(
-          &m_vertex, (VertexLoaderManager::g_current_components & VB_HAS_NRM2) != 0, outVertex);
-    }
+    if (VertexLoaderManager::g_current_components & VB_HAS_NORMAL)
+      TransformUnit::TransformNormal(&m_vertex, outVertex);
     TransformUnit::TransformColor(&m_vertex, outVertex);
     TransformUnit::TransformTexCoord(&m_vertex, outVertex);
 
     // assemble and rasterize the primitive
     m_setup_unit.SetupVertex();
 
-    INCSTAT(g_stats.this_frame.num_vertices_loaded)
+    INCSTAT(g_stats.this_frame.num_vertices_loaded);
   }
 
-  DebugUtil::OnObjectEnd();
+  INCSTAT(g_stats.this_frame.num_drawn_objects);
 }
 
 void SWVertexLoader::SetFormat()
 {
-  // matrix index from xf regs or cp memory?
-  if (xfmem.MatrixIndexA.PosNormalMtxIdx != g_main_cp_state.matrix_index_a.PosNormalMtxIdx ||
-      xfmem.MatrixIndexA.Tex0MtxIdx != g_main_cp_state.matrix_index_a.Tex0MtxIdx ||
-      xfmem.MatrixIndexA.Tex1MtxIdx != g_main_cp_state.matrix_index_a.Tex1MtxIdx ||
-      xfmem.MatrixIndexA.Tex2MtxIdx != g_main_cp_state.matrix_index_a.Tex2MtxIdx ||
-      xfmem.MatrixIndexA.Tex3MtxIdx != g_main_cp_state.matrix_index_a.Tex3MtxIdx ||
-      xfmem.MatrixIndexB.Tex4MtxIdx != g_main_cp_state.matrix_index_b.Tex4MtxIdx ||
-      xfmem.MatrixIndexB.Tex5MtxIdx != g_main_cp_state.matrix_index_b.Tex5MtxIdx ||
-      xfmem.MatrixIndexB.Tex6MtxIdx != g_main_cp_state.matrix_index_b.Tex6MtxIdx ||
-      xfmem.MatrixIndexB.Tex7MtxIdx != g_main_cp_state.matrix_index_b.Tex7MtxIdx)
-  {
-    ERROR_LOG_FMT(VIDEO, "Matrix indices don't match");
-  }
-
   m_vertex.posMtx = xfmem.MatrixIndexA.PosNormalMtxIdx;
   m_vertex.texMtx[0] = xfmem.MatrixIndexA.Tex0MtxIdx;
   m_vertex.texMtx[1] = xfmem.MatrixIndexA.Tex1MtxIdx;
@@ -222,6 +205,22 @@ void SWVertexLoader::ParseVertex(const PortableVertexDeclaration& vdec, int inde
   for (std::size_t i = 0; i < m_vertex.normal.size(); i++)
   {
     ReadVertexAttribute<float>(&m_vertex.normal[i][0], src, vdec.normals[i], 0, 3, false);
+  }
+  if (!vdec.normals[1].enable)
+  {
+    auto& system = Core::System::GetInstance();
+    auto& vertex_shader_manager = system.GetVertexShaderManager();
+    m_vertex.normal[1][0] = vertex_shader_manager.constants.cached_tangent[0];
+    m_vertex.normal[1][1] = vertex_shader_manager.constants.cached_tangent[1];
+    m_vertex.normal[1][2] = vertex_shader_manager.constants.cached_tangent[2];
+  }
+  if (!vdec.normals[2].enable)
+  {
+    auto& system = Core::System::GetInstance();
+    auto& vertex_shader_manager = system.GetVertexShaderManager();
+    m_vertex.normal[2][0] = vertex_shader_manager.constants.cached_binormal[0];
+    m_vertex.normal[2][1] = vertex_shader_manager.constants.cached_binormal[1];
+    m_vertex.normal[2][2] = vertex_shader_manager.constants.cached_binormal[2];
   }
 
   ParseColorAttributes(&m_vertex, src, vdec);

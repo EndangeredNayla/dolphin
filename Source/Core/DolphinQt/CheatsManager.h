@@ -35,6 +35,8 @@ public:
 
 signals:
   void OpenGeneralSettings();
+  void ShowMemory(u32 address);
+  void RequestWatch(QString name, u32 address);
 
 private:
   void CreateWidgets();

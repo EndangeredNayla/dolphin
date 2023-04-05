@@ -323,7 +323,7 @@ std::string Device::GetSource() const
 // Always add these at the end, given their hotplug nature
 int Device::GetSortPriority() const
 {
-  return -3;
+  return -4;
 }
 
 void Device::RunTasks()
@@ -1256,7 +1256,7 @@ void Device::IRState::ProcessData(const std::array<WiimoteEmu::IRBasic, 2>& data
   // A better implementation might extrapolate points when they fall out of camera view.
   // But just averaging visible points actually seems to work very well.
 
-  using IRObject = WiimoteEmu::IRBasic::IRObject;
+  using IRObject = WiimoteEmu::IRObject;
 
   MathUtil::RunningVariance<Common::Vec2> points;
 

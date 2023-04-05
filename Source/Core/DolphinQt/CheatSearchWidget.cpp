@@ -3,7 +3,6 @@
 
 #include "DolphinQt/CheatSearchWidget.h"
 
-#include <cassert>
 #include <functional>
 #include <optional>
 #include <string>
@@ -19,6 +18,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QString>
 #include <QTableWidget>
@@ -35,10 +35,13 @@
 #include "Core/CheatGeneration.h"
 #include "Core/CheatSearch.h"
 #include "Core/ConfigManager.h"
+#include "Core/Core.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/System.h"
 
 #include "DolphinQt/Config/CheatCodeEditor.h"
 #include "DolphinQt/Config/CheatWarningWidget.h"
+#include "DolphinQt/Settings.h"
 
 #include "UICommon/GameFile.h"
 
@@ -61,7 +64,17 @@ CheatSearchWidget::CheatSearchWidget(std::unique_ptr<Cheats::CheatSearchSessionB
   UpdateGuiTable();
 }
 
-CheatSearchWidget::~CheatSearchWidget() = default;
+CheatSearchWidget::~CheatSearchWidget()
+{
+  auto& settings = Settings::GetQSettings();
+  settings.setValue(QStringLiteral("cheatsearchwidget/displayhex"),
+                    m_display_values_in_hex_checkbox->isChecked());
+  if (m_session->IsIntegerType())
+  {
+    settings.setValue(QStringLiteral("cheatsearchwidget/parsehex"),
+                      m_parse_values_as_hex_checkbox->isChecked());
+  }
+}
 
 Q_DECLARE_METATYPE(Cheats::CompareType);
 Q_DECLARE_METATYPE(Cheats::FilterType);
@@ -193,8 +206,14 @@ void CheatSearchWidget::CreateWidgets()
   m_given_value_text = new QLineEdit();
   value_layout->addWidget(m_given_value_text);
 
+  auto& settings = Settings::GetQSettings();
   m_parse_values_as_hex_checkbox = new QCheckBox(tr("Parse as Hex"));
-  value_layout->addWidget(m_parse_values_as_hex_checkbox);
+  if (m_session->IsIntegerType())
+  {
+    m_parse_values_as_hex_checkbox->setChecked(
+        settings.value(QStringLiteral("cheatsearchwidget/parsehex")).toBool());
+    value_layout->addWidget(m_parse_values_as_hex_checkbox);
+  }
 
   auto* button_layout = new QHBoxLayout();
   m_next_scan_button = new QPushButton(tr("Search and Filter"));
@@ -211,6 +230,8 @@ void CheatSearchWidget::CreateWidgets()
   m_info_label_2 = new QLabel();
 
   m_display_values_in_hex_checkbox = new QCheckBox(tr("Display values in Hex"));
+  m_display_values_in_hex_checkbox->setChecked(
+      settings.value(QStringLiteral("cheatsearchwidget/displayhex")).toBool());
 
   QVBoxLayout* layout = new QVBoxLayout();
   layout->addWidget(session_info_label);
@@ -256,14 +277,21 @@ void CheatSearchWidget::OnNextScanClicked()
   m_session->SetCompareType(m_compare_type_dropdown->currentData().value<Cheats::CompareType>());
   if (filter_type == Cheats::FilterType::CompareAgainstSpecificValue)
   {
-    if (!m_session->SetValueFromString(m_given_value_text->text().toStdString(),
+    QString search_value = m_given_value_text->text();
+    if (m_session->IsIntegerType() || m_session->IsFloatingType())
+      search_value = search_value.simplified().remove(QLatin1Char(' '));
+    if (!m_session->SetValueFromString(search_value.toStdString(),
                                        m_parse_values_as_hex_checkbox->isChecked()))
     {
       m_info_label_1->setText(tr("Failed to parse given value into target data type."));
       return;
     }
   }
-  Cheats::SearchErrorCode error_code = m_session->RunSearch();
+
+  const Cheats::SearchErrorCode error_code = [this] {
+    Core::CPUThreadGuard guard(Core::System::GetInstance());
+    return m_session->RunSearch(guard);
+  }();
 
   if (error_code == Cheats::SearchErrorCode::Success)
   {
@@ -368,7 +396,13 @@ bool CheatSearchWidget::RefreshValues()
   }
 
   tmp->SetFilterType(Cheats::FilterType::DoNotFilter);
-  if (tmp->RunSearch() != Cheats::SearchErrorCode::Success)
+
+  const Cheats::SearchErrorCode error_code = [&tmp] {
+    Core::CPUThreadGuard guard(Core::System::GetInstance());
+    return tmp->RunSearch(guard);
+  }();
+
+  if (error_code != Cheats::SearchErrorCode::Success)
   {
     m_info_label_1->setText(tr("Refresh failed. Please run the game for a bit and try again."));
     return false;
@@ -425,8 +459,16 @@ void CheatSearchWidget::OnAddressTableContextMenu()
   if (m_address_table->selectedItems().isEmpty())
     return;
 
+  auto* item = m_address_table->selectedItems()[0];
+  const u32 address = item->data(ADDRESS_TABLE_ADDRESS_ROLE).toUInt();
+
   QMenu* menu = new QMenu(this);
 
+  menu->addAction(tr("Show in memory"), [this, address] { emit ShowMemory(address); });
+  menu->addAction(tr("Add to watch"), this, [this, address] {
+    const QString name = QStringLiteral("mem_%1").arg(address, 8, 16, QLatin1Char('0'));
+    emit RequestWatch(name, address);
+  });
   menu->addAction(tr("Generate Action Replay Code"), this, &CheatSearchWidget::GenerateARCode);
 
   menu->exec(QCursor::pos());

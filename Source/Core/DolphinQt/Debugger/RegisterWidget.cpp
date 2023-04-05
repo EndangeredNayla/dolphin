@@ -8,12 +8,15 @@
 #include <QActionGroup>
 #include <QHeaderView>
 #include <QMenu>
+#include <QMessageBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include "Common/Debug/CodeTrace.h"
 #include "Core/Core.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/System.h"
 #include "DolphinQt/Host.h"
 #include "DolphinQt/Settings.h"
 
@@ -114,11 +117,11 @@ void RegisterWidget::ShowContextMenu()
 {
   QMenu* menu = new QMenu(this);
 
-  auto variant = m_table->currentItem()->data(DATA_TYPE);
+  auto* raw_item = m_table->currentItem();
 
-  if (!variant.isNull())
+  if (raw_item != nullptr && !raw_item->data(DATA_TYPE).isNull())
   {
-    auto* item = static_cast<RegisterColumn*>(m_table->currentItem());
+    auto* item = static_cast<RegisterColumn*>(raw_item);
     auto type = static_cast<RegisterType>(item->data(DATA_TYPE).toInt());
     auto display = item->GetDisplay();
 
@@ -149,11 +152,42 @@ void RegisterWidget::ShowContextMenu()
     // i18n: A double precision floating point number
     auto* view_double = menu->addAction(tr("Double"));
 
+    menu->addSeparator();
+
+    auto* view_hex_column = menu->addAction(tr("All Hexadecimal"));
+    view_hex_column->setData(static_cast<int>(RegisterDisplay::Hex));
+    auto* view_int_column = menu->addAction(tr("All Signed Integer"));
+    view_int_column->setData(static_cast<int>(RegisterDisplay::SInt32));
+    auto* view_uint_column = menu->addAction(tr("All Unsigned Integer"));
+    view_uint_column->setData(static_cast<int>(RegisterDisplay::UInt32));
+    // i18n: A floating point number
+    auto* view_float_column = menu->addAction(tr("All Float"));
+    view_float_column->setData(static_cast<int>(RegisterDisplay::Float));
+    // i18n: A double precision floating point number
+    auto* view_double_column = menu->addAction(tr("All Double"));
+    view_double_column->setData(static_cast<int>(RegisterDisplay::Double));
+
+    if (type == RegisterType::gpr || type == RegisterType::fpr)
+    {
+      menu->addSeparator();
+
+      const std::string type_string =
+          fmt::format("{}{}", type == RegisterType::gpr ? "r" : "f", m_table->currentItem()->row());
+      menu->addAction(tr("Run until hit (ignoring breakpoints)"),
+                      [this, type_string]() { AutoStep(type_string); });
+    }
+
     for (auto* action : {view_hex, view_int, view_uint, view_float, view_double})
     {
       action->setCheckable(true);
       action->setVisible(false);
       action->setActionGroup(group);
+    }
+
+    for (auto* action : {view_hex_column, view_int_column, view_uint_column, view_float_column,
+                         view_double_column})
+    {
+      action->setVisible(false);
     }
 
     switch (display)
@@ -182,10 +216,16 @@ void RegisterWidget::ShowContextMenu()
       view_int->setVisible(true);
       view_uint->setVisible(true);
       view_float->setVisible(true);
+      view_hex_column->setVisible(true);
+      view_int_column->setVisible(true);
+      view_uint_column->setVisible(true);
+      view_float_column->setVisible(true);
       break;
     case RegisterType::fpr:
       view_hex->setVisible(true);
       view_double->setVisible(true);
+      view_hex_column->setVisible(true);
+      view_double_column->setVisible(true);
       break;
     default:
       break;
@@ -221,6 +261,19 @@ void RegisterWidget::ShowContextMenu()
       m_updating = false;
     });
 
+    for (auto* action : {view_hex_column, view_int_column, view_uint_column, view_float_column,
+                         view_double_column})
+    {
+      connect(action, &QAction::triggered, [this, action] {
+        auto col = m_table->currentItem()->column();
+        for (int i = 0; i < 32; i++)
+        {
+          auto* update_item = static_cast<RegisterColumn*>(m_table->item(i, col));
+          update_item->SetDisplay(static_cast<RegisterDisplay>(action->data().toInt()));
+        }
+      });
+    }
+
     menu->addSeparator();
   }
 
@@ -229,23 +282,54 @@ void RegisterWidget::ShowContextMenu()
   menu->exec(QCursor::pos());
 }
 
+void RegisterWidget::AutoStep(const std::string& reg) const
+{
+  CodeTrace trace;
+  trace.SetRegTracked(reg);
+
+  QMessageBox msgbox(
+      QMessageBox::NoIcon, tr("Timed Out"),
+      tr("<font color='#ff0000'>AutoStepping timed out. Current instruction is irrelevant."),
+      QMessageBox::Cancel);
+  QPushButton* run_button = msgbox.addButton(tr("Keep Running"), QMessageBox::AcceptRole);
+
+  while (true)
+  {
+    const AutoStepResults results = [&trace] {
+      Core::CPUThreadGuard guard(Core::System::GetInstance());
+      return trace.AutoStepping(guard, true);
+    }();
+
+    emit Host::GetInstance()->UpdateDisasmDialog();
+
+    if (!results.timed_out)
+      break;
+
+    // Can keep running and try again after a time out.
+    msgbox.exec();
+    if (msgbox.clickedButton() != (QAbstractButton*)run_button)
+      break;
+  }
+}
+
 void RegisterWidget::PopulateTable()
 {
   for (int i = 0; i < 32; i++)
   {
     // General purpose registers (int)
     AddRegister(
-        i, 0, RegisterType::gpr, "r" + std::to_string(i), [i] { return GPR(i); },
-        [i](u64 value) { GPR(i) = value; });
+        i, 0, RegisterType::gpr, "r" + std::to_string(i), [i] { return PowerPC::ppcState.gpr[i]; },
+        [i](u64 value) { PowerPC::ppcState.gpr[i] = value; });
 
     // Floating point registers (double)
     AddRegister(
-        i, 2, RegisterType::fpr, "f" + std::to_string(i), [i] { return rPS(i).PS0AsU64(); },
-        [i](u64 value) { rPS(i).SetPS0(value); });
+        i, 2, RegisterType::fpr, "f" + std::to_string(i),
+        [i] { return PowerPC::ppcState.ps[i].PS0AsU64(); },
+        [i](u64 value) { PowerPC::ppcState.ps[i].SetPS0(value); });
 
     AddRegister(
-        i, 4, RegisterType::fpr, "", [i] { return rPS(i).PS1AsU64(); },
-        [i](u64 value) { rPS(i).SetPS1(value); });
+        i, 4, RegisterType::fpr, "", [i] { return PowerPC::ppcState.ps[i].PS1AsU64(); },
+        [i](u64 value) { PowerPC::ppcState.ps[i].SetPS1(value); });
   }
 
   // The IBAT and DBAT registers have a large gap between
@@ -342,8 +426,8 @@ void RegisterWidget::PopulateTable()
 
   // XER
   AddRegister(
-      21, 5, RegisterType::xer, "XER", [] { return PowerPC::GetXER().Hex; },
-      [](u64 value) { PowerPC::SetXER(UReg_XER(value)); });
+      21, 5, RegisterType::xer, "XER", [] { return PowerPC::ppcState.GetXER().Hex; },
+      [](u64 value) { PowerPC::ppcState.SetXER(UReg_XER(value)); });
 
   // FPSCR
   AddRegister(
@@ -370,12 +454,20 @@ void RegisterWidget::PopulateTable()
 
   // Int Mask
   AddRegister(
-      27, 5, RegisterType::int_mask, "Int Mask", [] { return ProcessorInterface::GetMask(); },
+      27, 5, RegisterType::int_mask, "Int Mask",
+      [] {
+        auto& system = Core::System::GetInstance();
+        return system.GetProcessorInterface().GetMask();
+      },
       nullptr);
 
   // Int Cause
   AddRegister(
-      28, 5, RegisterType::int_cause, "Int Cause", [] { return ProcessorInterface::GetCause(); },
+      28, 5, RegisterType::int_cause, "Int Cause",
+      [] {
+        auto& system = Core::System::GetInstance();
+        return system.GetProcessorInterface().GetCause();
+      },
       nullptr);
 
   // DSISR

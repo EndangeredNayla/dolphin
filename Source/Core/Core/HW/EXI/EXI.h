@@ -3,18 +3,26 @@
 
 #pragma once
 
+#include <array>
 #include <initializer_list>
+#include <memory>
 
 #include "Common/CommonTypes.h"
 #include "Common/EnumFormatter.h"
 #include "Core/CoreTiming.h"
 
 class PointerWrap;
+struct Sram;
 
+namespace Core
+{
+class System;
+}
 namespace CoreTiming
 {
+struct EventType;
 enum class FromThread;
-}
+}  // namespace CoreTiming
 namespace MMIO
 {
 class Mapping;
@@ -37,10 +45,12 @@ enum class Slot : int
   B,
   SP1,
 };
-static constexpr auto SLOTS = {Slot::A, Slot::B, Slot::SP1};
-static constexpr auto MAX_SLOT = Slot::SP1;
-static constexpr auto MEMCARD_SLOTS = {Slot::A, Slot::B};
-static constexpr auto MAX_MEMCARD_SLOT = Slot::B;
+// Note: using auto here results in a false warning on GCC
+// See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=80351
+constexpr std::initializer_list<Slot> SLOTS = {Slot::A, Slot::B, Slot::SP1};
+constexpr auto MAX_SLOT = Slot::SP1;
+constexpr std::initializer_list<Slot> MEMCARD_SLOTS = {Slot::A, Slot::B};
+constexpr auto MAX_MEMCARD_SLOT = Slot::B;
 constexpr bool IsMemcardSlot(Slot slot)
 {
   return slot == Slot::A || slot == Slot::B;
@@ -49,24 +59,49 @@ constexpr bool IsMemcardSlot(Slot slot)
 u8 SlotToEXIChannel(Slot slot);
 u8 SlotToEXIDevice(Slot slot);
 
-void Init();
-void Shutdown();
-void DoState(PointerWrap& p);
-void PauseAndLock(bool doLock, bool unpauseOnUnlock);
+class ExpansionInterfaceManager
+{
+public:
+  explicit ExpansionInterfaceManager(Core::System& system);
+  ExpansionInterfaceManager(const ExpansionInterfaceManager&) = delete;
+  ExpansionInterfaceManager(ExpansionInterfaceManager&&) = delete;
+  ExpansionInterfaceManager& operator=(const ExpansionInterfaceManager&) = delete;
+  ExpansionInterfaceManager& operator=(ExpansionInterfaceManager&&) = delete;
+  ~ExpansionInterfaceManager();
 
-void RegisterMMIO(MMIO::Mapping* mmio, u32 base);
+  void Init(const Sram* override_sram);
+  void Shutdown();
+  void DoState(PointerWrap& p);
+  void PauseAndLock(bool doLock, bool unpauseOnUnlock);
 
-void UpdateInterrupts();
-void ScheduleUpdateInterrupts(CoreTiming::FromThread from, int cycles_late);
+  void RegisterMMIO(MMIO::Mapping* mmio, u32 base);
 
-void ChangeDevice(Slot slot, EXIDeviceType device_type,
-                  CoreTiming::FromThread from_thread = CoreTiming::FromThread::NON_CPU);
-void ChangeDevice(u8 channel, u8 device_num, EXIDeviceType device_type,
-                  CoreTiming::FromThread from_thread = CoreTiming::FromThread::NON_CPU);
+  void UpdateInterrupts();
+  void ScheduleUpdateInterrupts(CoreTiming::FromThread from, int cycles_late);
 
-CEXIChannel* GetChannel(u32 index);
-IEXIDevice* GetDevice(Slot slot);
+  void ChangeDevice(Slot slot, EXIDeviceType device_type,
+                    CoreTiming::FromThread from_thread = CoreTiming::FromThread::NON_CPU);
+  void ChangeDevice(u8 channel, u8 device_num, EXIDeviceType device_type,
+                    CoreTiming::FromThread from_thread = CoreTiming::FromThread::NON_CPU);
 
+  CEXIChannel* GetChannel(u32 index);
+  IEXIDevice* GetDevice(Slot slot);
+
+private:
+  void AddMemoryCard(Slot slot);
+
+  static void ChangeDeviceCallback(Core::System& system, u64 userdata, s64 cycles_late);
+  static void UpdateInterruptsCallback(Core::System& system, u64 userdata, s64 cycles_late);
+
+  CoreTiming::EventType* m_event_type_change_device = nullptr;
+  CoreTiming::EventType* m_event_type_update_interrupts = nullptr;
+
+  std::array<std::unique_ptr<CEXIChannel>, MAX_EXI_CHANNELS> m_channels;
+
+  bool m_using_overridden_sram = false;
+
+  Core::System& m_system;
+};
 }  // namespace ExpansionInterface
 
 template <>

@@ -152,6 +152,12 @@ ControllerEmu::ControlGroup* GetTaTaConGroup(int number, WiimoteEmu::TaTaConGrou
   return static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(number))->GetTaTaConGroup(group);
 }
 
+ControllerEmu::ControlGroup* GetShinkansenGroup(int number, WiimoteEmu::ShinkansenGroup group)
+{
+  return static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(number))
+      ->GetShinkansenGroup(group);
+}
+
 void Shutdown()
 {
   s_config.UnregisterHotplugCallback();
@@ -226,7 +232,7 @@ void DoState(PointerWrap& p)
       static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(i))->DoState(p);
     }
 
-    if (p.GetMode() == PointerWrap::MODE_READ)
+    if (p.IsReadMode())
     {
       // If using a real wiimote or the save-state source does not match the current source,
       // then force a reconnection on load.

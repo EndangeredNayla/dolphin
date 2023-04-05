@@ -8,11 +8,17 @@
 #include <QTableWidget>
 
 #include "Common/CommonTypes.h"
+#include "Common/Debug/CodeTrace.h"
 
 class QKeyEvent;
 class QMouseEvent;
 class QResizeEvent;
 class QShowEvent;
+
+namespace Core
+{
+class CPUThreadGuard;
+};
 
 struct CodeViewBranch;
 class BranchDisplayDelegate;
@@ -38,6 +44,7 @@ public:
   // Set tighter row height. Set BP column sizing. This needs to run when font type changes.
   void FontBasedSizing();
   void Update();
+  void Update(const Core::CPUThreadGuard* guard);
 
   void ToggleBreakpoint();
   void AddBreakpoint();
@@ -68,9 +75,12 @@ private:
 
   void OnContextMenu();
 
+  void AutoStep(CodeTrace::AutoStop option = CodeTrace::AutoStop::Always);
   void OnFollowBranch();
   void OnCopyAddress();
+  void OnCopyTargetAddress();
   void OnShowInMemory();
+  void OnShowTargetInMemory();
   void OnCopyFunction();
   void OnCopyCode();
   void OnCopyHex();

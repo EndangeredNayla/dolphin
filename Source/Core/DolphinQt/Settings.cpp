@@ -29,12 +29,14 @@
 #include "Common/FileUtil.h"
 #include "Common/StringUtil.h"
 
+#include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/IOS/IOS.h"
 #include "Core/NetPlayClient.h"
 #include "Core/NetPlayServer.h"
+#include "Core/System.h"
 
 #include "DolphinQt/Host.h"
 #include "DolphinQt/QtUtils/QueueOnObject.h"
@@ -44,7 +46,6 @@
 
 #include "VideoCommon/NetPlayChatUI.h"
 #include "VideoCommon/NetPlayGolfUI.h"
-#include "VideoCommon/RenderBase.h"
 
 Settings::Settings()
 {
@@ -69,7 +70,7 @@ Settings::Settings()
     }
   });
 
-  g_controller_interface.RegisterDevicesChangedCallback([this] {
+  m_hotplug_callback_handle = g_controller_interface.RegisterDevicesChangedCallback([this] {
     if (Host::GetInstance()->IsHostThread())
     {
       emit DevicesChanged();
@@ -89,6 +90,11 @@ Settings::Settings()
 }
 
 Settings::~Settings() = default;
+
+void Settings::UnregisterDevicesChangedCallback()
+{
+  g_controller_interface.UnregisterDevicesChangedCallback(m_hotplug_callback_handle);
+}
 
 Settings& Settings::Instance()
 {
@@ -119,8 +125,7 @@ QString Settings::GetCurrentUserStyle() const
   return QFileInfo(GetQSettings().value(QStringLiteral("userstyle/path")).toString()).fileName();
 }
 
-// Calling this before the main window has been created breaks the style of some widgets on
-// Windows 10/Qt 5.15.0. But only if we set a stylesheet that isn't an empty string.
+// Calling this before the main window has been created breaks the style of some widgets.
 void Settings::SetCurrentUserStyle(const QString& stylesheet_name)
 {
   QString stylesheet_contents;
@@ -155,22 +160,6 @@ void Settings::SetCurrentUserStyle(const QString& stylesheet_name)
             .arg(border_color.rgba(), 0, 16);
     stylesheet_contents.append(QStringLiteral("%1").arg(tooltip_stylesheet));
   }
-#ifdef _WIN32
-  // MSVC has a bug causing QTabBar scroll buttons to be partially transparent when they inherit any
-  // stylesheet (see https://bugreports.qt.io/browse/QTBUG-74187) which is triggered when setting
-  // qApp's stylesheet below. Setting the scroll buttons' color directly fixes the problem.
-
-  // Create a temporary QToolButton that's a child of a QTabBar in case that has different styling
-  // than a plain QToolButton.
-  const auto tab_bar = std::make_unique<QTabBar>();
-  auto* const tool_button = new QToolButton(tab_bar.get());
-
-  const QRgb background_color = tool_button->palette().color(QPalette::Button).rgba();
-
-  const std::string style_var =
-      fmt::format("QTabBar QToolButton {{ background-color: #{:08x}; }}", background_color);
-  stylesheet_contents.append(QString::fromStdString(style_var));
-#endif
 
   qApp->setStyleSheet(stylesheet_contents);
 
@@ -363,6 +352,22 @@ bool Settings::IsKeepWindowOnTopEnabled() const
   return Config::Get(Config::MAIN_KEEP_WINDOW_ON_TOP);
 }
 
+bool Settings::GetGraphicModsEnabled() const
+{
+  return Config::Get(Config::GFX_MODS_ENABLE);
+}
+
+void Settings::SetGraphicModsEnabled(bool enabled)
+{
+  if (GetGraphicModsEnabled() == enabled)
+  {
+    return;
+  }
+
+  Config::SetBaseOrCurrent(Config::GFX_MODS_ENABLE, enabled);
+  emit EnableGfxModsChanged(enabled);
+}
+
 int Settings::GetVolume() const
 {
   return Config::Get(Config::MAIN_AUDIO_VOLUME);
@@ -379,13 +384,13 @@ void Settings::SetVolume(int volume)
 
 void Settings::IncreaseVolume(int volume)
 {
-  AudioCommon::IncreaseVolume(volume);
+  AudioCommon::IncreaseVolume(Core::System::GetInstance(), volume);
   emit VolumeChanged(GetVolume());
 }
 
 void Settings::DecreaseVolume(int volume)
 {
-  AudioCommon::DecreaseVolume(volume);
+  AudioCommon::DecreaseVolume(Core::System::GetInstance(), volume);
   emit VolumeChanged(GetVolume());
 }
 
@@ -606,6 +611,7 @@ void Settings::SetDebugFont(QFont font)
 QFont Settings::GetDebugFont() const
 {
   QFont default_font = QFont(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
+  default_font.setPointSizeF(9.0);
 
   return GetQSettings().value(QStringLiteral("debugger/font"), default_font).value<QFont>();
 }

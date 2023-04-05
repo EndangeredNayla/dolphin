@@ -18,8 +18,9 @@ import android.view.MotionEvent;
  */
 public final class InputOverlayDrawableButton
 {
-  // The ID identifying what type of button this Drawable represents.
-  private int mButtonType;
+  // The legacy ID identifying what type of button this Drawable represents.
+  private int mLegacyId;
+  private int mControl;
   private int mTrackId;
   private int mPreviousTouchX, mPreviousTouchY;
   private int mControlPositionX, mControlPositionY;
@@ -35,28 +36,33 @@ public final class InputOverlayDrawableButton
    * @param res                {@link Resources} instance.
    * @param defaultStateBitmap {@link Bitmap} to use with the default state Drawable.
    * @param pressedStateBitmap {@link Bitmap} to use with the pressed state Drawable.
-   * @param buttonType         Identifier for this type of button.
+   * @param legacyId           Legacy identifier (ButtonType) for this type of button.
+   * @param control            Control ID for this type of button.
    */
   public InputOverlayDrawableButton(Resources res, Bitmap defaultStateBitmap,
-          Bitmap pressedStateBitmap, int buttonType)
+          Bitmap pressedStateBitmap, int legacyId, int control)
   {
     mTrackId = -1;
     mDefaultStateBitmap = new BitmapDrawable(res, defaultStateBitmap);
     mPressedStateBitmap = new BitmapDrawable(res, pressedStateBitmap);
-    mButtonType = buttonType;
+    mLegacyId = legacyId;
+    mControl = control;
 
     mWidth = mDefaultStateBitmap.getIntrinsicWidth();
     mHeight = mDefaultStateBitmap.getIntrinsicHeight();
   }
 
   /**
-   * Gets this InputOverlayDrawableButton's button ID.
-   *
-   * @return this InputOverlayDrawableButton's button ID.
+   * Gets this InputOverlayDrawableButton's legacy button ID.
    */
-  public int getId()
+  public int getLegacyId()
   {
-    return mButtonType;
+    return mLegacyId;
+  }
+
+  public int getControl()
+  {
+    return mControl;
   }
 
   public void setTrackId(int trackId)
@@ -71,22 +77,19 @@ public final class InputOverlayDrawableButton
 
   public void onConfigureTouch(MotionEvent event)
   {
-    int pointerIndex = event.getActionIndex();
-    int fingerPositionX = (int) event.getX(pointerIndex);
-    int fingerPositionY = (int) event.getY(pointerIndex);
     switch (event.getAction())
     {
       case MotionEvent.ACTION_DOWN:
-        mPreviousTouchX = fingerPositionX;
-        mPreviousTouchY = fingerPositionY;
+        mPreviousTouchX = (int) event.getX();
+        mPreviousTouchY = (int) event.getY();
         break;
       case MotionEvent.ACTION_MOVE:
-        mControlPositionX += fingerPositionX - mPreviousTouchX;
-        mControlPositionY += fingerPositionY - mPreviousTouchY;
+        mControlPositionX += (int) event.getX() - mPreviousTouchX;
+        mControlPositionY += (int) event.getY() - mPreviousTouchY;
         setBounds(mControlPositionX, mControlPositionY, getWidth() + mControlPositionX,
                 getHeight() + mControlPositionY);
-        mPreviousTouchX = fingerPositionX;
-        mPreviousTouchY = fingerPositionY;
+        mPreviousTouchX = (int) event.getX();
+        mPreviousTouchY = (int) event.getY();
         break;
     }
   }

@@ -8,12 +8,15 @@
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
 
+#include "Common/FatFsUtil.h"
 #include "Common/ScopeGuard.h"
+
 #include "Core/CommonTitles.h"
 #include "Core/HW/WiiSave.h"
 #include "Core/IOS/ES/ES.h"
 #include "Core/IOS/IOS.h"
 #include "Core/WiiUtils.h"
+
 #include "DiscIO/NANDImporter.h"
 
 // The hardcoded values here must match WiiUtils.java
@@ -63,7 +66,7 @@ static jint ConvertUpdateResult(WiiUtils::UpdateResult result)
     return 8;
   default:
     ASSERT(false);
-    return 1;
+    return 7;
   }
 
   static_assert(static_cast<int>(WiiUtils::UpdateResult::NumberOfEntries) == 9);
@@ -132,6 +135,27 @@ JNIEXPORT jint JNICALL Java_org_dolphinemu_dolphinemu_utils_WiiUtils_doOnlineUpd
   return ConvertUpdateResult(result);
 }
 
+JNIEXPORT jint JNICALL Java_org_dolphinemu_dolphinemu_utils_WiiUtils_doDiscUpdate(JNIEnv* env,
+                                                                                  jclass,
+                                                                                  jstring jPath,
+                                                                                  jobject jCallback)
+{
+  const std::string path = GetJString(env, jPath);
+
+  jobject jCallbackGlobal = env->NewGlobalRef(jCallback);
+  Common::ScopeGuard scope_guard([jCallbackGlobal, env] { env->DeleteGlobalRef(jCallbackGlobal); });
+
+  const auto callback = [&jCallbackGlobal](int processed, int total, u64 title_id) {
+    JNIEnv* env = IDCache::GetEnvForThread();
+    return static_cast<bool>(env->CallBooleanMethod(
+        jCallbackGlobal, IDCache::GetWiiUpdateCallbackFunction(), processed, total, title_id));
+  };
+
+  WiiUtils::UpdateResult result = WiiUtils::DoDiscUpdate(callback, path);
+
+  return ConvertUpdateResult(result);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_org_dolphinemu_dolphinemu_utils_WiiUtils_isSystemMenuInstalled(JNIEnv* env, jclass)
 {
@@ -139,6 +163,15 @@ Java_org_dolphinemu_dolphinemu_utils_WiiUtils_isSystemMenuInstalled(JNIEnv* env,
   const auto tmd = ios.GetES()->FindInstalledTMD(Titles::SYSTEM_MENU);
 
   return tmd.IsValid();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_utils_WiiUtils_isSystemMenuvWii(JNIEnv* env, jclass)
+{
+  IOS::HLE::Kernel ios;
+  const auto tmd = ios.GetES()->FindInstalledTMD(Titles::SYSTEM_MENU);
+
+  return tmd.IsvWii();
 }
 
 JNIEXPORT jstring JNICALL
@@ -152,6 +185,18 @@ Java_org_dolphinemu_dolphinemu_utils_WiiUtils_getSystemMenuVersion(JNIEnv* env, 
     return ToJString(env, "");
   }
 
-  return ToJString(env, DiscIO::GetSysMenuVersionString(tmd.GetTitleVersion()));
+  return ToJString(env, DiscIO::GetSysMenuVersionString(tmd.GetTitleVersion(), tmd.IsvWii()));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_utils_WiiUtils_syncSdFolderToSdImage(JNIEnv* env, jclass)
+{
+  return static_cast<jboolean>(Common::SyncSDFolderToSDImage([]() { return false; }, false));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_utils_WiiUtils_syncSdImageToSdFolder(JNIEnv* env, jclass)
+{
+  return static_cast<jboolean>(Common::SyncSDImageToSDFolder([]() { return false; }));
 }
 }

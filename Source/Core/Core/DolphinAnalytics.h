@@ -21,12 +21,9 @@
 
 enum class GameQuirk
 {
-  // Sometimes code run from ICache is different from its mirror in RAM.
-  ICACHE_MATTERS = 0,
-
   // The Wii remote hardware makes it possible to bypass normal data reporting and directly
   // "read" extension or IR data. This would break our current TAS/NetPlay implementation.
-  DIRECTLY_READS_WIIMOTE_INPUT,
+  DIRECTLY_READS_WIIMOTE_INPUT = 0,
 
   // Several Wii DI commands that are rarely/never used and not implemented by Dolphin
   USES_DVD_LOW_STOP_LASER,
@@ -80,6 +77,17 @@ enum class GameQuirk
   SETS_XF_CLIPDISABLE_BIT_0,
   SETS_XF_CLIPDISABLE_BIT_1,
   SETS_XF_CLIPDISABLE_BIT_2,
+
+  // Similar to the XF-BP mismatch, CP and XF might be configured with different vertex formats.
+  // Real hardware seems to hang in this case, so games probably don't do this, but it would
+  // be good to know if anything does it.
+  MISMATCHED_GPU_COLORS_BETWEEN_CP_AND_XF,
+  MISMATCHED_GPU_NORMALS_BETWEEN_CP_AND_XF,
+  MISMATCHED_GPU_TEX_COORDS_BETWEEN_CP_AND_XF,
+  // Both CP and XF have normally-identical matrix index information.  We currently always
+  // use the CP one in the hardware renderers and the XF one in the software renderer,
+  // but testing is needed to find out which of these is actually used for what.
+  MISMATCHED_GPU_MATRIX_INDICES_BETWEEN_CP_AND_XF,
 
   COUNT,
 };

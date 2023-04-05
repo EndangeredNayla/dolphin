@@ -3,6 +3,7 @@
 
 #include "DolphinQt/Config/Mapping/MappingWindow.h"
 
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -11,6 +12,7 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include "Core/Core.h"
@@ -45,6 +47,7 @@
 #include "DolphinQt/Config/Mapping/WiimoteEmuMotionControl.h"
 #include "DolphinQt/Config/Mapping/WiimoteEmuMotionControlIMU.h"
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
+#include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/QtUtils/WindowActivationEventFilter.h"
 #include "DolphinQt/QtUtils/WrapInScrollArea.h"
 #include "DolphinQt/Settings.h"
@@ -94,13 +97,26 @@ void MappingWindow::CreateDevicesLayout()
   m_devices_layout = new QHBoxLayout();
   m_devices_box = new QGroupBox(tr("Device"));
   m_devices_combo = new QComboBox();
-  m_devices_refresh = new QPushButton(tr("Refresh"));
+
+  auto* const options = new QToolButton();
+  // Make it more apparent that this is a menu with more options.
+  options->setPopupMode(QToolButton::ToolButtonPopupMode::MenuButtonPopup);
+
+  const auto refresh_action = new QAction(tr("Refresh"), options);
+  connect(refresh_action, &QAction::triggered, this, &MappingWindow::RefreshDevices);
+
+  m_all_devices_action = new QAction(tr("Create mappings for other devices"), options);
+  m_all_devices_action->setCheckable(true);
+
+  options->addAction(refresh_action);
+  options->addAction(m_all_devices_action);
+  options->setDefaultAction(refresh_action);
 
   m_devices_combo->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
-  m_devices_refresh->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+  options->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
   m_devices_layout->addWidget(m_devices_combo);
-  m_devices_layout->addWidget(m_devices_refresh);
+  m_devices_layout->addWidget(options);
 
   m_devices_box->setLayout(m_devices_layout);
 }
@@ -110,9 +126,9 @@ void MappingWindow::CreateProfilesLayout()
   m_profiles_layout = new QHBoxLayout();
   m_profiles_box = new QGroupBox(tr("Profile"));
   m_profiles_combo = new QComboBox();
-  m_profiles_load = new QPushButton(tr("Load"));
-  m_profiles_save = new QPushButton(tr("Save"));
-  m_profiles_delete = new QPushButton(tr("Delete"));
+  m_profiles_load = new NonDefaultQPushButton(tr("Load"));
+  m_profiles_save = new NonDefaultQPushButton(tr("Save"));
+  m_profiles_delete = new NonDefaultQPushButton(tr("Delete"));
 
   auto* button_layout = new QHBoxLayout();
 
@@ -133,8 +149,8 @@ void MappingWindow::CreateResetLayout()
 {
   m_reset_layout = new QHBoxLayout();
   m_reset_box = new QGroupBox(tr("Reset"));
-  m_reset_clear = new QPushButton(tr("Clear"));
-  m_reset_default = new QPushButton(tr("Default"));
+  m_reset_clear = new NonDefaultQPushButton(tr("Clear"));
+  m_reset_default = new NonDefaultQPushButton(tr("Default"));
 
   m_reset_box->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
@@ -169,8 +185,6 @@ void MappingWindow::ConnectWidgets()
   connect(this, &MappingWindow::ConfigChanged, this, &MappingWindow::OnGlobalDevicesChanged);
   connect(m_devices_combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
           &MappingWindow::OnSelectDevice);
-
-  connect(m_devices_refresh, &QPushButton::clicked, this, &MappingWindow::RefreshDevices);
 
   connect(m_reset_clear, &QPushButton::clicked, this, &MappingWindow::OnClearFieldsPressed);
   connect(m_reset_default, &QPushButton::clicked, this, &MappingWindow::OnDefaultFieldsPressed);
@@ -322,9 +336,6 @@ void MappingWindow::OnSaveProfilePressed()
 
 void MappingWindow::OnSelectDevice(int)
 {
-  if (IsMappingAllDevices())
-    return;
-
   // Original string is stored in the "user-data".
   const auto device = m_devices_combo->currentData().toString().toStdString();
 
@@ -334,7 +345,7 @@ void MappingWindow::OnSelectDevice(int)
 
 bool MappingWindow::IsMappingAllDevices() const
 {
-  return m_devices_combo->currentIndex() == m_devices_combo->count() - 1;
+  return m_all_devices_action->isChecked();
 }
 
 void MappingWindow::RefreshDevices()
@@ -354,8 +365,6 @@ void MappingWindow::OnGlobalDevicesChanged()
     m_devices_combo->addItem(qname, qname);
   }
 
-  m_devices_combo->insertSeparator(m_devices_combo->count());
-
   const auto default_device = m_controller->GetDefaultDevice().ToString();
 
   if (!default_device.empty())
@@ -370,14 +379,13 @@ void MappingWindow::OnGlobalDevicesChanged()
     else
     {
       // Selected device is not currently attached.
+      m_devices_combo->insertSeparator(m_devices_combo->count());
       const auto qname = QString::fromStdString(default_device);
       m_devices_combo->addItem(QLatin1Char{'['} + tr("disconnected") + QStringLiteral("] ") + qname,
                                qname);
       m_devices_combo->setCurrentIndex(m_devices_combo->count() - 1);
     }
   }
-
-  m_devices_combo->addItem(tr("All devices"));
 }
 
 void MappingWindow::SetMappingType(MappingWindow::Type type)

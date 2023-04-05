@@ -9,6 +9,8 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/Inline.h"
+
+#include "Core/HW/WiimoteEmu/Extension/DesiredExtensionState.h"
 #include "Core/HW/WiimoteEmu/WiimoteEmu.h"
 
 #include "Common/Logging/Log.h"
@@ -43,7 +45,12 @@ bool None::ReadDeviceDetectPin() const
   return false;
 }
 
-void None::Update()
+void None::BuildDesiredExtensionState(DesiredExtensionState* target_state)
+{
+  target_state->data.emplace<std::monostate>();
+}
+
+void None::Update(const DesiredExtensionState& target_state)
 {
   // Nothing needed.
 }
@@ -136,7 +143,7 @@ void EncryptedExtension::DoState(PointerWrap& p)
 {
   p.Do(m_reg);
 
-  if (p.GetMode() == PointerWrap::MODE_READ)
+  if (p.IsReadMode())
   {
     // No need to sync the key when we can just regenerate it.
     m_is_key_dirty = true;

@@ -23,6 +23,7 @@
 #include "Core/PowerPC/PowerPC.h"
 
 #include "DolphinQt/QtUtils/ModalMessageBox.h"
+#include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 #include "DolphinQt/QtUtils/SignalBlocking.h"
 #include "DolphinQt/Settings.h"
 
@@ -32,12 +33,10 @@
 #endif
 
 constexpr int AUTO_UPDATE_DISABLE_INDEX = 0;
-constexpr int AUTO_UPDATE_STABLE_INDEX = 1;
-constexpr int AUTO_UPDATE_BETA_INDEX = 2;
-constexpr int AUTO_UPDATE_DEV_INDEX = 3;
+constexpr int AUTO_UPDATE_BETA_INDEX = 1;
+constexpr int AUTO_UPDATE_DEV_INDEX = 2;
 
 constexpr const char* AUTO_UPDATE_DISABLE_STRING = "";
-constexpr const char* AUTO_UPDATE_STABLE_STRING = "stable";
 constexpr const char* AUTO_UPDATE_BETA_STRING = "beta";
 constexpr const char* AUTO_UPDATE_DEV_STRING = "dev";
 
@@ -109,8 +108,11 @@ void GeneralPane::ConnectLayout()
   }
 
   // Advanced
-  connect(m_combobox_speedlimit, qOverload<int>(&QComboBox::currentIndexChanged),
-          [this]() { OnSaveConfig(); });
+  connect(m_combobox_speedlimit, qOverload<int>(&QComboBox::currentIndexChanged), [this]() {
+    Config::SetBaseOrCurrent(Config::MAIN_EMULATION_SPEED,
+                             m_combobox_speedlimit->currentIndex() * 0.1f);
+    Config::Save();
+  });
 
   connect(m_combobox_fallback_region, qOverload<int>(&QComboBox::currentIndexChanged), this,
           &GeneralPane::OnSaveConfig);
@@ -204,7 +206,8 @@ void GeneralPane::CreateAnalytics()
   m_main_layout->addWidget(analytics_group);
 
   m_checkbox_enable_analytics = new QCheckBox(tr("Enable Usage Statistics Reporting"));
-  m_button_generate_new_identity = new QPushButton(tr("Generate a New Statistics Identity"));
+  m_button_generate_new_identity =
+      new NonDefaultQPushButton(tr("Generate a New Statistics Identity"));
   analytics_group_layout->addWidget(m_checkbox_enable_analytics);
   analytics_group_layout->addWidget(m_button_generate_new_identity);
 }
@@ -217,14 +220,15 @@ void GeneralPane::LoadConfig()
   if (AutoUpdateChecker::SystemSupportsAutoUpdates())
   {
     const auto track = Settings::Instance().GetAutoUpdateTrack().toStdString();
+
+    // If the track doesn't match any known value, set to "beta" which is the
+    // default config value on Dolphin release builds.
     if (track == AUTO_UPDATE_DISABLE_STRING)
       SignalBlocking(m_combobox_update_track)->setCurrentIndex(AUTO_UPDATE_DISABLE_INDEX);
-    else if (track == AUTO_UPDATE_STABLE_STRING)
-      SignalBlocking(m_combobox_update_track)->setCurrentIndex(AUTO_UPDATE_STABLE_INDEX);
-    else if (track == AUTO_UPDATE_BETA_STRING)
-      SignalBlocking(m_combobox_update_track)->setCurrentIndex(AUTO_UPDATE_BETA_INDEX);
-    else
+    else if (track == AUTO_UPDATE_DEV_STRING)
       SignalBlocking(m_combobox_update_track)->setCurrentIndex(AUTO_UPDATE_DEV_INDEX);
+    else
+      SignalBlocking(m_combobox_update_track)->setCurrentIndex(AUTO_UPDATE_BETA_INDEX);
   }
 
 #if defined(USE_ANALYTICS) && USE_ANALYTICS
@@ -267,9 +271,6 @@ static QString UpdateTrackFromIndex(int index)
   {
   case AUTO_UPDATE_DISABLE_INDEX:
     value = QString::fromStdString(AUTO_UPDATE_DISABLE_STRING);
-    break;
-  case AUTO_UPDATE_STABLE_INDEX:
-    value = QString::fromStdString(AUTO_UPDATE_STABLE_STRING);
     break;
   case AUTO_UPDATE_BETA_INDEX:
     value = QString::fromStdString(AUTO_UPDATE_BETA_STRING);
@@ -332,8 +333,6 @@ void GeneralPane::OnSaveConfig()
                            m_checkbox_override_region_settings->isChecked());
   Config::SetBase(Config::MAIN_AUTO_DISC_CHANGE, m_checkbox_auto_disc_change->isChecked());
   Config::SetBaseOrCurrent(Config::MAIN_ENABLE_CHEATS, m_checkbox_cheats->isChecked());
-  Config::SetBaseOrCurrent(Config::MAIN_EMULATION_SPEED,
-                           m_combobox_speedlimit->currentIndex() * 0.1f);
   Settings::Instance().SetFallbackRegion(
       UpdateFallbackRegionFromIndex(m_combobox_fallback_region->currentIndex()));
 

@@ -19,6 +19,11 @@
 #include "Common/StringUtil.h"
 #include "Common/x64Emitter.h"
 
+#ifdef _MSC_VER
+// This file is extremely slow to optimize (40s on amd 3990x), so just disable optimizations
+#pragma optimize("", off)
+#endif
+
 namespace Gen
 {
 struct NamedReg
@@ -87,7 +92,31 @@ class x64EmitterTest : public testing::Test
 protected:
   void SetUp() override
   {
-    memset(&cpu_info, 0x01, sizeof(cpu_info));
+    // Ensure settings are constant no matter on which actual hardware the test runs.
+    // Attempt to maximize complex code coverage. Note that this will miss some paths.
+    cpu_info.vendor = CPUVendor::Intel;
+    cpu_info.cpu_id = "GenuineIntel";
+    cpu_info.model_name = "Unknown";
+    cpu_info.HTT = true;
+    cpu_info.num_cores = 8;
+    cpu_info.bSSE3 = true;
+    cpu_info.bSSSE3 = true;
+    cpu_info.bSSE4_1 = true;
+    cpu_info.bSSE4_2 = true;
+    cpu_info.bLZCNT = true;
+    cpu_info.bAVX = true;
+    cpu_info.bBMI1 = true;
+    cpu_info.bBMI2 = true;
+    cpu_info.bBMI2FastParallelBitOps = true;
+    cpu_info.bFMA = true;
+    cpu_info.bFMA4 = true;
+    cpu_info.bAES = true;
+    cpu_info.bMOVBE = true;
+    cpu_info.bFlushToZero = true;
+    cpu_info.bAtom = false;
+    cpu_info.bCRC32 = true;
+    cpu_info.bSHA1 = true;
+    cpu_info.bSHA2 = true;
 
     emitter.reset(new X64CodeBlock());
     emitter->AllocCodeSpace(4096);
@@ -1243,3 +1272,7 @@ FMA4_TEST(VFMADDSUB, P, true)
 FMA4_TEST(VFMSUBADD, P, true)
 
 }  // namespace Gen
+
+#ifdef _MSC_VER
+#pragma optimize("", on)
+#endif

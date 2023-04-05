@@ -10,10 +10,10 @@
 #include <vector>
 
 #include <fmt/format.h>
-#include <mbedtls/sha1.h>
 
 #if defined(_WIN32)
-#include <windows.h>
+#include <Windows.h>
+#include "Common/WindowsRegistry.h"
 #elif defined(__APPLE__)
 #include <objc/message.h>
 #elif defined(ANDROID)
@@ -25,6 +25,7 @@
 #include "Common/CPUDetect.h"
 #include "Common/CommonTypes.h"
 #include "Common/Config/Config.h"
+#include "Common/Crypto/SHA1.h"
 #include "Common/Random.h"
 #include "Common/Timer.h"
 #include "Common/Version.h"
@@ -100,9 +101,8 @@ void DolphinAnalytics::GenerateNewIdentity()
 
 std::string DolphinAnalytics::MakeUniqueId(std::string_view data) const
 {
-  std::array<u8, 20> digest;
   const auto input = std::string{m_unique_id}.append(data);
-  mbedtls_sha1_ret(reinterpret_cast<const u8*>(input.c_str()), input.size(), digest.data());
+  const auto digest = Common::SHA1::CalculateDigest(input);
 
   // Convert to hex string and truncate to 64 bits.
   std::string out;
@@ -136,8 +136,7 @@ void DolphinAnalytics::ReportGameStart()
 }
 
 // Keep in sync with enum class GameQuirk definition.
-constexpr std::array<const char*, 24> GAME_QUIRKS_NAMES{
-    "icache-matters",
+constexpr std::array<const char*, 27> GAME_QUIRKS_NAMES{
     "directly-reads-wiimote-input",
     "uses-DVDLowStopLaser",
     "uses-DVDLowOffset",
@@ -161,6 +160,10 @@ constexpr std::array<const char*, 24> GAME_QUIRKS_NAMES{
     "sets-xf-clipdisable-bit-0",
     "sets-xf-clipdisable-bit-1",
     "sets-xf-clipdisable-bit-2",
+    "mismatched-gpu-colors-between-cp-and-xf",
+    "mismatched-gpu-normals-between-cp-and-xf",
+    "mismatched-gpu-tex-coords-between-cp-and-xf",
+    "mismatched-gpu-matrix-indices-between-cp-and-xf",
 };
 static_assert(GAME_QUIRKS_NAMES.size() == static_cast<u32>(GameQuirk::COUNT),
               "Game quirks names and enum definition are out of sync.");
@@ -228,18 +231,18 @@ void DolphinAnalytics::InitializePerformanceSampling()
   u64 wait_us =
       PERFORMANCE_SAMPLING_INITIAL_WAIT_TIME_SECS * 1000000 +
       Common::Random::GenerateValue<u64>() % (PERFORMANCE_SAMPLING_WAIT_TIME_JITTER_SECS * 1000000);
-  m_sampling_next_start_us = Common::Timer::GetTimeUs() + wait_us;
+  m_sampling_next_start_us = Common::Timer::NowUs() + wait_us;
 }
 
 bool DolphinAnalytics::ShouldStartPerformanceSampling()
 {
-  if (Common::Timer::GetTimeUs() < m_sampling_next_start_us)
+  if (Common::Timer::NowUs() < m_sampling_next_start_us)
     return false;
 
   u64 wait_us =
       PERFORMANCE_SAMPLING_INTERVAL_SECS * 1000000 +
       Common::Random::GenerateValue<u64>() % (PERFORMANCE_SAMPLING_WAIT_TIME_JITTER_SECS * 1000000);
-  m_sampling_next_start_us = Common::Timer::GetTimeUs() + wait_us;
+  m_sampling_next_start_us = Common::Timer::NowUs() + wait_us;
   return true;
 }
 
@@ -263,21 +266,10 @@ void DolphinAnalytics::MakeBaseBuilder()
 #if defined(_WIN32)
   builder.AddData("os-type", "windows");
 
-  // Windows 8 removes support for GetVersionEx and such. Stupid.
-  DWORD(WINAPI * RtlGetVersion)(LPOSVERSIONINFOEXW);
-  *(FARPROC*)&RtlGetVersion = GetProcAddress(GetModuleHandle(TEXT("ntdll")), "RtlGetVersion");
-
-  OSVERSIONINFOEXW winver;
-  winver.dwOSVersionInfoSize = sizeof(winver);
-  if (RtlGetVersion != nullptr)
-  {
-    RtlGetVersion(&winver);
-    builder.AddData("win-ver-major", static_cast<u32>(winver.dwMajorVersion));
-    builder.AddData("win-ver-minor", static_cast<u32>(winver.dwMinorVersion));
-    builder.AddData("win-ver-build", static_cast<u32>(winver.dwBuildNumber));
-    builder.AddData("win-ver-spmajor", static_cast<u32>(winver.wServicePackMajor));
-    builder.AddData("win-ver-spminor", static_cast<u32>(winver.wServicePackMinor));
-  }
+  const auto winver = WindowsRegistry::GetOSVersion();
+  builder.AddData("win-ver-major", static_cast<u32>(winver.dwMajorVersion));
+  builder.AddData("win-ver-minor", static_cast<u32>(winver.dwMinorVersion));
+  builder.AddData("win-ver-build", static_cast<u32>(winver.dwBuildNumber));
 #elif defined(ANDROID)
   builder.AddData("os-type", "android");
   builder.AddData("android-manufacturer", s_get_val_func("DEVICE_MANUFACTURER"));
@@ -406,7 +398,6 @@ void DolphinAnalytics::MakePerGameBuilder()
                   g_Config.backend_info.bSupportsExclusiveFullscreen);
   builder.AddData("gpu-has-dual-source-blend", g_Config.backend_info.bSupportsDualSourceBlend);
   builder.AddData("gpu-has-primitive-restart", g_Config.backend_info.bSupportsPrimitiveRestart);
-  builder.AddData("gpu-has-oversized-viewports", g_Config.backend_info.bSupportsOversizedViewports);
   builder.AddData("gpu-has-geometry-shaders", g_Config.backend_info.bSupportsGeometryShaders);
   builder.AddData("gpu-has-3d-vision", g_Config.backend_info.bSupports3DVision);
   builder.AddData("gpu-has-early-z", g_Config.backend_info.bSupportsEarlyZ);
@@ -419,6 +410,8 @@ void DolphinAnalytics::MakePerGameBuilder()
   builder.AddData("gpu-has-palette-conversion", g_Config.backend_info.bSupportsPaletteConversion);
   builder.AddData("gpu-has-clip-control", g_Config.backend_info.bSupportsClipControl);
   builder.AddData("gpu-has-ssaa", g_Config.backend_info.bSupportsSSAA);
+  builder.AddData("gpu-has-logic-ops", g_Config.backend_info.bSupportsLogicOp);
+  builder.AddData("gpu-has-framebuffer-fetch", g_Config.backend_info.bSupportsFramebufferFetch);
 
   // NetPlay / recording.
   builder.AddData("netplay", NetPlay::IsNetPlayRunning());
@@ -426,8 +419,7 @@ void DolphinAnalytics::MakePerGameBuilder()
 
   // Controller information
   // We grab enough to tell what percentage of our users are playing with keyboard/mouse, some kind
-  // of gamepad
-  // or the official GameCube adapter.
+  // of gamepad, or the official GameCube adapter.
   builder.AddData("gcadapter-detected", GCAdapter::IsDetected(nullptr));
   builder.AddData("has-controller", Pad::GetConfig()->IsControllerControlledByGamepadDevice(0) ||
                                         GCAdapter::IsDetected(nullptr));

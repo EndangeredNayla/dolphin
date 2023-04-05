@@ -76,7 +76,7 @@ static bool ImportWAD(IOS::HLE::Kernel& ios, const DiscIO::VolumeWAD& wad,
     if (ret != IOS::HLE::IOSC_FAIL_CHECKVALUE)
     {
       PanicAlertFmtT("WAD installation failed: Could not initialise title import (error {0}).",
-                     ret);
+                     static_cast<u32>(ret));
     }
     return false;
   }
@@ -458,11 +458,24 @@ OnlineSystemUpdater::Response OnlineSystemUpdater::GetSystemTitles()
   doc.save(stream);
   const std::string request = stream.str();
 
-  // Note: We don't use HTTPS because that would require the user to have
-  // a device certificate which cannot be redistributed with Dolphin.
-  // This is fine, because IOS has signature checks.
+  std::string base_url = Config::Get(Config::MAIN_WII_NUS_SHOP_URL);
+  if (base_url.empty())
+  {
+    // The NUS servers for the Wii are offline (https://bugs.dolphin-emu.org/issues/12865),
+    // but the backing data CDN is still active and accessible from other URLs. We take advantage
+    // of this by hosting our own NetUpdateSOAP endpoint which serves the correct list of titles to
+    // install along with URLs for the Wii U CDN.
+#ifdef ANDROID
+    // HTTPS is unsupported on Android (https://bugs.dolphin-emu.org/issues/11772).
+    base_url = "http://fakenus.dolphin-emu.org";
+#else
+    base_url = "https://fakenus.dolphin-emu.org";
+#endif
+  }
+
+  const std::string url = fmt::format("{}/nus/services/NetUpdateSOAP", base_url);
   const Common::HttpRequest::Response response =
-      m_http.Post("http://nus.shop.wii.com/nus/services/NetUpdateSOAP", request,
+      m_http.Post(url, request,
                   {
                       {"SOAPAction", "urn:nus.wsapi.broadon.com/GetSystemUpdate"},
                       {"User-Agent", "wii libnup/1.0"},
@@ -535,7 +548,7 @@ UpdateResult OnlineSystemUpdater::InstallTitleFromNUS(const std::string& prefix_
   const auto es = m_ios.GetES();
   if ((ret = es->ImportTicket(ticket.first, ticket.second)) < 0)
   {
-    ERROR_LOG_FMT(CORE, "Failed to import ticket: error {}", ret);
+    ERROR_LOG_FMT(CORE, "Failed to import ticket: error {}", static_cast<u32>(ret));
     return UpdateResult::ImportFailed;
   }
 
@@ -567,7 +580,7 @@ UpdateResult OnlineSystemUpdater::InstallTitleFromNUS(const std::string& prefix_
   IOS::HLE::ESDevice::Context context;
   if ((ret = es->ImportTitleInit(context, tmd.first.GetBytes(), tmd.second)) < 0)
   {
-    ERROR_LOG_FMT(CORE, "Failed to initialise title import: error {}", ret);
+    ERROR_LOG_FMT(CORE, "Failed to initialise title import: error {}", static_cast<u32>(ret));
     return UpdateResult::ImportFailed;
   }
 
@@ -588,7 +601,7 @@ UpdateResult OnlineSystemUpdater::InstallTitleFromNUS(const std::string& prefix_
       if ((ret = es->ImportContentBegin(context, title.id, content.id)) < 0)
       {
         ERROR_LOG_FMT(CORE, "Failed to initialise import for content {:08x}: error {}", content.id,
-                      ret);
+                      static_cast<u32>(ret));
         return UpdateResult::ImportFailed;
       }
 
@@ -613,7 +626,7 @@ UpdateResult OnlineSystemUpdater::InstallTitleFromNUS(const std::string& prefix_
   if ((all_contents_imported && (ret = es->ImportTitleDone(context)) < 0) ||
       (!all_contents_imported && (ret = es->ImportTitleCancel(context)) < 0))
   {
-    ERROR_LOG_FMT(CORE, "Failed to finalise title import: error {}", ret);
+    ERROR_LOG_FMT(CORE, "Failed to finalise title import: error {}", static_cast<u32>(ret));
     return UpdateResult::ImportFailed;
   }
 
